@@ -4,7 +4,7 @@ import numpy as np
 from scipy.spatial import Delaunay
 
 # TODO: Path aanpassen voor jezelf.
-path = r"D:/Documenten/Python/BMT_Q1/IP_CV/Project_persoonlijk/shape_predictor_68_face_landmarks.dat"
+path = r"shape_predictor_68_face_landmarks.dat"
 
 predictor_path = path  # replace with your path
 detector = dlib.get_frontal_face_detector()
