@@ -3,8 +3,7 @@ import dlib
 import numpy as np
 from scipy.spatial import Delaunay
 
-
-# ---- Load dlib model ----
+# TODO: Path aanpassen voor jezelf.
 path = r"D:/Documenten/Python/BMT_Q1/IP_CV/Project_persoonlijk/shape_predictor_68_face_landmarks.dat"
 
 predictor_path = path  # replace with your path
