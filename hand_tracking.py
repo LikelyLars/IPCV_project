@@ -1,8 +1,15 @@
 import cv2
 import dlib
 import numpy as np
-from face_warp import get_landmarks
 from scipy.spatial import Delaunay
+
+def get_landmarks(predictor, gray, face):
+    shape = predictor(gray, face)
+    return np.array([(p.x, p.y) for p in shape.parts()], dtype=np.float32)
+
+
+detector = dlib.get_frontal_face_detector()
+predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 
 # Initialize webcam (0 = default camera)
 cap = cv2.VideoCapture(0)
@@ -30,8 +37,12 @@ while True:
 cap.release()
 cv2.destroyAllWindows()
 
-# locate the face using get_landmarks from face_warp.py
-get_landmarks(frame)
+# locate the face using get_landmarks
+gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+faces = detector(gray)
+
+for face in faces:
+    landmarks = get_landmarks(predictor, gray, face)
 
 #loctate hand using cv2 and numpy, ignoring the face
 
