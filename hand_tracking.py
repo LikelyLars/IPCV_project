@@ -7,6 +7,30 @@ def get_landmarks(predictor, gray, face):
     shape = predictor(gray, face)
     return np.array([(p.x, p.y) for p in shape.parts()], dtype=np.float32)
 
+def adjust_lighting(image):
+    """
+    Normalize brightness and contrast to make detection more reliable
+    under different lighting conditions.
+    """
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    cl = clahe.apply(l)
+    limg = cv2.merge((cl, a, b))
+    enhanced = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+    return enhanced
+
+def auto_gamma_correction(image):
+    """
+    Auto gamma correction based on average brightness.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    mean_intensity = np.mean(gray)
+    gamma = np.interp(mean_intensity, [50, 150], [1.8, 0.7])
+    inv_gamma = 1.0 / gamma
+    table = np.array([(i / 255.0) ** inv_gamma * 255 for i in np.arange(256)]).astype("uint8")
+    return cv2.LUT(image, table)
+
 detector = dlib.get_frontal_face_detector()
 predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 
@@ -21,9 +45,9 @@ def nothing(x):
     pass
 
 cv2.namedWindow("HSV Tuning")
-cv2.createTrackbar("H Min", "HSV Tuning", 0, 179, nothing)
-cv2.createTrackbar("H Max", "HSV Tuning", 20, 179, nothing)
-cv2.createTrackbar("S Min", "HSV Tuning", 20, 255, nothing)
+cv2.createTrackbar("H Min", "HSV Tuning", 5, 179, nothing)
+cv2.createTrackbar("H Max", "HSV Tuning", 15, 179, nothing)
+cv2.createTrackbar("S Min", "HSV Tuning", 50, 255, nothing)
 cv2.createTrackbar("S Max", "HSV Tuning", 255, 255, nothing)
 cv2.createTrackbar("V Min", "HSV Tuning", 70, 255, nothing)
 cv2.createTrackbar("V Max", "HSV Tuning", 255, 255, nothing)
@@ -36,14 +60,16 @@ while True:
         break
 
     output_frame = frame.copy()
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    detection_frame = adjust_lighting(frame)
+    detection_frame = auto_gamma_correction(detection_frame)
+    gray = cv2.cvtColor(detection_frame, cv2.COLOR_BGR2GRAY)
 
     # --- FACE DETECTION ---
     faces = detector(gray)
     face_mask = np.zeros_like(gray, dtype=np.uint8)  # Mask of face regions
 
     for face in faces:
-        x, y, w, h = face.left(), face.top(), face.width(), face.height()
+        x, y, w, h = face.left(), face.top()-50, face.width(), face.height()+100
         cv2.rectangle(output_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
         # Draw landmarks
@@ -79,9 +105,20 @@ while True:
 
     # Find contours (hands)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area > 2000:  # Filter out small blobs
+    valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > 5000] # Filter out small blobs
+    valid_contours = sorted(valid_contours, key=cv2.contourArea, reverse=True) # Sort by area (largest first)
+    valid_contours = valid_contours[:2] # Keep only the 2 largest
+    for cnt in valid_contours:
+        if cv2.contourArea(cnt) > 25000:  # big contour -> maybe 2 hands
+            from sklearn.cluster import KMeans
+            cnt_points = cnt.reshape(-1, 2)
+            kmeans = KMeans(n_clusters=2, random_state=0).fit(cnt_points)
+            for i in range(2):
+                hand_points = cnt_points[kmeans.labels_ == i]
+                x, y, w, h = cv2.boundingRect(hand_points)
+                cv2.rectangle(output_frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+                cv2.putText(output_frame, "Hand", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,0,0), 2)
+        else:
             x, y, w, h = cv2.boundingRect(cnt)
             cv2.rectangle(output_frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
             cv2.putText(output_frame, "Hand", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,0,0), 2)
