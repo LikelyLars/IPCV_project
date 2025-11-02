@@ -4,9 +4,9 @@ import numpy as np
 import mediapipe as mp
 from collections import deque
 
-# --- FACE + IMAGE PROCESSING HELPERS ---
+# --- helper functions for image detection ---
 def adjust_lighting(image):
-    """Improve contrast and lighting balance using CLAHE."""
+    """Improve contrast and lightnig balance using CLAHE."""
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
@@ -24,6 +24,7 @@ def auto_gamma_correction(image):
     return cv2.LUT(image, table)
 
 # --- FACE DETECTION ---
+#detect faces, used to know the relation between hands and head
 def detect_faces(frame, detector, predictor):
     """
     Detects faces and their landmarks.
@@ -34,14 +35,15 @@ def detect_faces(frame, detector, predictor):
     detected_faces = []
 
     for face in faces:
-        x, y, w, h = face.left(), face.top()-50, face.width(), face.height()+100
+        x, y, w, h = face.left(), face.top()-50, face.width(), face.height()+100 # make the box bigger to include forehead
         shape = predictor(gray, face)
         landmarks = np.array([(p.x, p.y) for p in shape.parts()], dtype=np.int32)
         detected_faces.append({"bbox": (x, y, w, h), "landmarks": landmarks})
     return detected_faces
 
 # --- HAND DETECTION + TRACKING ---
-def locate_hands(frame, hands_model):
+#detect hands, to track their their positions
+def detect_hands(frame, hands_model):
     """Detect hands using MediaPipe and return bounding boxes + centroids."""
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     result = hands_model.process(rgb)
@@ -57,6 +59,7 @@ def locate_hands(frame, hands_model):
             detected.append({"bbox": (x_min, y_min, x_max - x_min, y_max - y_min), "center": (cx, cy)})
     return detected
 
+#track motion of the hands
 def update_hand_tracks(tracks, detected_hands, max_len=50):
     """Maintain separate tracks for up to 2 hands."""
     detected_hands = sorted(detected_hands, key=lambda h: h["center"][0])
@@ -65,6 +68,7 @@ def update_hand_tracks(tracks, detected_hands, max_len=50):
             tracks[i].append(hand["center"])
     return tracks
 
+#dra the paths, for testing
 def draw_hand_paths(frame, tracks):
     """Draw each hand’s movement path."""
     colors = [(255, 0, 0), (0, 255, 255)]  # Blue = left, Yellow = right
@@ -73,18 +77,11 @@ def draw_hand_paths(frame, tracks):
             cv2.line(frame, track[j-1], track[j], colors[i], 3)
     return frame
 
+# --- GESTURE DETECTION ---
+#detect the rainbow gesture of the hands aove the head, and returns true if detected
 def detect_rainbow_gesture(tracks, face_bbox, min_start_distance=50, min_end_distance_ratio=0.5):
     """
     Detects if hands performed a "rainbow over the head" gesture dynamically.
-
-    Args:
-        tracks: list of two deques containing hand positions [(x,y), ...]
-        face_bbox: (x, y, w, h) bounding box of face
-        min_start_distance: max distance between hands to consider them "together" at start
-        min_end_distance_ratio: fraction of head width hands must reach at sides
-
-    Returns:
-        bool: True if gesture detected
     """
     if len(tracks) != 2 or len(tracks[0]) < 5 or len(tracks[1]) < 5:
         return False  # Not enough data yet
@@ -92,7 +89,7 @@ def detect_rainbow_gesture(tracks, face_bbox, min_start_distance=50, min_end_dis
     head_x, head_y, head_w, head_h = face_bbox
     head_top_y = head_y
 
-    # --- 1️) Find the first frame where hands are close together above the head ---
+    # --- Find the first frame where hands are close together above the head ---
     start_idx = None
     for i in range(len(tracks[0])):
         h1 = tracks[0][i]
@@ -104,16 +101,16 @@ def detect_rainbow_gesture(tracks, face_bbox, min_start_distance=50, min_end_dis
             break
 
     if start_idx is None:
-        return False  # No valid start found yet
+        return False  # No valid start found yet, so no gesture done
 
-    # --- 2️) Use last frame as end position ---
+    # --- Use last frame as end position ---
     hand1_end = tracks[0][-1]
     hand2_end = tracks[1][-1]
 
     # --- End positions on sides of head ---
     hands_apart = (hand1_end[0] < head_x + head_w * min_end_distance_ratio and
                    hand2_end[0] > head_x + head_w * (1 - min_end_distance_ratio)) or \
-                  (hand2_end[0] < head_x + head_w * min_end_distance_ratio and
+                  (hand2_end[0] < head_x + head_w * min_end_distance_ratio and #doesnt matter which hand goed to which side
                    hand1_end[0] > head_x + head_w * (1 - min_end_distance_ratio))
 
     hands_below_head = hand1_end[1] >= head_top_y and hand2_end[1] >= head_top_y
@@ -121,7 +118,7 @@ def detect_rainbow_gesture(tracks, face_bbox, min_start_distance=50, min_end_dis
     return hands_apart and hands_below_head
 
 
-# --- INIT ---
+# --- INITIALIZE STUFF ---
 detector = dlib.get_frontal_face_detector()
 predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 
@@ -135,6 +132,7 @@ hands_model = mp_hands.Hands(
 
 tracks = [deque(maxlen=90), deque(maxlen=90)]  # two tracks: left, right
 
+# --- MAIN LOOP ---
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     print("Error: Could not open webcam.")
@@ -146,6 +144,7 @@ while True:
     if not ret:
         break
 
+    #make the frame more robust, but output the original
     output_frame = frame.copy()
     processed_frame = auto_gamma_correction(adjust_lighting(frame))
 
@@ -153,18 +152,18 @@ while True:
     faces = detect_faces(processed_frame, detector, predictor)
     for face in faces:
         x, y, w, h = face["bbox"]
-        cv2.rectangle(output_frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        cv2.rectangle(output_frame, (x, y), (x+w, y+h), (0, 255, 0), 2) #draw box and landmarks for testing
         for (lx, ly) in face["landmarks"]:
             cv2.circle(output_frame, (lx, ly), 2, (0, 0, 255), -1)
 
     # --- HAND DETECTION + TRACKING ---
-    detected_hands = locate_hands(frame, hands_model)
+    detected_hands = detect_hands(processed_frame, hands_model)
     if len(detected_hands) == 2:
         tracks = update_hand_tracks(tracks, detected_hands)
         for i, hand in enumerate(detected_hands):
             x, y, w, h = hand["bbox"]
             cx, cy = hand["center"]
-            cv2.rectangle(output_frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+            cv2.rectangle(output_frame, (x, y), (x+w, y+h), (255, 0, 0), 2) #draw for testing
             cv2.circle(output_frame, (cx, cy), 6, (0, 0, 255), -1)
             cv2.putText(output_frame, f"Hand {i+1}", (x, y-10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,0,0), 2)
@@ -174,10 +173,10 @@ while True:
         face_bbox = faces[0]["bbox"]
         rainbow_done = detect_rainbow_gesture(tracks, face_bbox)
         if rainbow_done:
-            cv2.putText(output_frame, "Rainbow Gesture Detected!", (50,50),
+            cv2.putText(output_frame, "Rainbow Gesture Detected!", (50,50), #say gesture detected for testing
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,255,0), 3)
 
-    # --- DRAW TRAILS ---
+    # --- DRAW TRAILS (only for testing) ---
     output_frame = draw_hand_paths(output_frame, tracks)
 
     # --- DISPLAY ---
