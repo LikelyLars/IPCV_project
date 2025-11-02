@@ -1,29 +1,21 @@
 import cv2
 import dlib
 import numpy as np
+import mediapipe as mp
+from collections import deque
 
-# --- FACE DETECTION ---
-def get_landmarks(predictor, gray, face):
-    shape = predictor(gray, face)
-    return np.array([(p.x, p.y) for p in shape.parts()], dtype=np.float32)
-
+# --- FACE + IMAGE PROCESSING HELPERS ---
 def adjust_lighting(image):
-    """
-    Normalize brightness and contrast to make detection more reliable
-    under different lighting conditions.
-    """
+    """Improve contrast and lighting balance using CLAHE."""
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
     cl = clahe.apply(l)
     limg = cv2.merge((cl, a, b))
-    enhanced = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
-    return enhanced
+    return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
 
 def auto_gamma_correction(image):
-    """
-    Auto gamma correction based on average brightness.
-    """
+    """Automatically correct gamma based on average brightness."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     mean_intensity = np.mean(gray)
     gamma = np.interp(mean_intensity, [50, 150], [1.8, 0.7])
@@ -31,102 +23,165 @@ def auto_gamma_correction(image):
     table = np.array([(i / 255.0) ** inv_gamma * 255 for i in np.arange(256)]).astype("uint8")
     return cv2.LUT(image, table)
 
+# --- FACE DETECTION ---
+def detect_faces(frame, detector, predictor):
+    """
+    Detects faces and their landmarks.
+    Returns: list of dicts with 'bbox' and 'landmarks'.
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = detector(gray)
+    detected_faces = []
+
+    for face in faces:
+        x, y, w, h = face.left(), face.top()-50, face.width(), face.height()+100
+        shape = predictor(gray, face)
+        landmarks = np.array([(p.x, p.y) for p in shape.parts()], dtype=np.int32)
+        detected_faces.append({"bbox": (x, y, w, h), "landmarks": landmarks})
+    return detected_faces
+
+# --- HAND DETECTION + TRACKING ---
+def locate_hands(frame, hands_model):
+    """Detect hands using MediaPipe and return bounding boxes + centroids."""
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    result = hands_model.process(rgb)
+    detected = []
+    if result.multi_hand_landmarks:
+        h, w, _ = frame.shape
+        for hand_landmarks in result.multi_hand_landmarks:
+            x_coords = [lm.x * w for lm in hand_landmarks.landmark]
+            y_coords = [lm.y * h for lm in hand_landmarks.landmark]
+            x_min, x_max = int(min(x_coords)), int(max(x_coords))
+            y_min, y_max = int(min(y_coords)), int(max(y_coords))
+            cx, cy = int(np.mean(x_coords)), int(np.mean(y_coords))
+            detected.append({"bbox": (x_min, y_min, x_max - x_min, y_max - y_min), "center": (cx, cy)})
+    return detected
+
+def update_hand_tracks(tracks, detected_hands, max_len=50):
+    """Maintain separate tracks for up to 2 hands."""
+    detected_hands = sorted(detected_hands, key=lambda h: h["center"][0])
+    if len(detected_hands) == 2:
+        for i, hand in enumerate(detected_hands):
+            tracks[i].append(hand["center"])
+    return tracks
+
+def draw_hand_paths(frame, tracks):
+    """Draw each hand’s movement path."""
+    colors = [(255, 0, 0), (0, 255, 255)]  # Blue = left, Yellow = right
+    for i, track in enumerate(tracks):
+        for j in range(1, len(track)):
+            cv2.line(frame, track[j-1], track[j], colors[i], 3)
+    return frame
+
+def detect_rainbow_gesture(tracks, face_bbox, min_start_distance=50, min_end_distance_ratio=0.5):
+    """
+    Detects if hands performed a "rainbow over the head" gesture dynamically.
+
+    Args:
+        tracks: list of two deques containing hand positions [(x,y), ...]
+        face_bbox: (x, y, w, h) bounding box of face
+        min_start_distance: max distance between hands to consider them "together" at start
+        min_end_distance_ratio: fraction of head width hands must reach at sides
+
+    Returns:
+        bool: True if gesture detected
+    """
+    if len(tracks) != 2 or len(tracks[0]) < 5 or len(tracks[1]) < 5:
+        return False  # Not enough data yet
+
+    head_x, head_y, head_w, head_h = face_bbox
+    head_top_y = head_y
+
+    # --- 1️) Find the first frame where hands are close together above the head ---
+    start_idx = None
+    for i in range(len(tracks[0])):
+        h1 = tracks[0][i]
+        h2 = tracks[1][i]
+        hands_close = np.linalg.norm(np.array(h1) - np.array(h2)) < min_start_distance
+        hands_above_head = h1[1] < head_top_y and h2[1] < head_top_y
+        if hands_close and hands_above_head:
+            start_idx = i
+            break
+
+    if start_idx is None:
+        return False  # No valid start found yet
+
+    # --- 2️) Use last frame as end position ---
+    hand1_end = tracks[0][-1]
+    hand2_end = tracks[1][-1]
+
+    # --- End positions on sides of head ---
+    hands_apart = (hand1_end[0] < head_x + head_w * min_end_distance_ratio and
+                   hand2_end[0] > head_x + head_w * (1 - min_end_distance_ratio)) or \
+                  (hand2_end[0] < head_x + head_w * min_end_distance_ratio and
+                   hand1_end[0] > head_x + head_w * (1 - min_end_distance_ratio))
+
+    hands_below_head = hand1_end[1] >= head_top_y and hand2_end[1] >= head_top_y
+
+    return hands_apart and hands_below_head
+
+
+# --- INIT ---
 detector = dlib.get_frontal_face_detector()
 predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 
-# --- WEBCAM ---
+mp_hands = mp.solutions.hands
+hands_model = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=2,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+)
+
+tracks = [deque(maxlen=90), deque(maxlen=90)]  # two tracks: left, right
+
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     print("Error: Could not open webcam.")
     exit()
 
-# --- Trackbar callback ---
-def nothing(x):
-    pass
-
-cv2.namedWindow("HSV Tuning")
-cv2.createTrackbar("H Min", "HSV Tuning", 5, 179, nothing)
-cv2.createTrackbar("H Max", "HSV Tuning", 15, 179, nothing)
-cv2.createTrackbar("S Min", "HSV Tuning", 50, 255, nothing)
-cv2.createTrackbar("S Max", "HSV Tuning", 255, 255, nothing)
-cv2.createTrackbar("V Min", "HSV Tuning", 70, 255, nothing)
-cv2.createTrackbar("V Max", "HSV Tuning", 255, 255, nothing)
-
-print("Webcam opened. Press 'q' to quit.")
-
+print("Press 'q' to quit.")
 while True:
     ret, frame = cap.read()
     if not ret:
         break
 
     output_frame = frame.copy()
-    detection_frame = adjust_lighting(frame)
-    detection_frame = auto_gamma_correction(detection_frame)
-    gray = cv2.cvtColor(detection_frame, cv2.COLOR_BGR2GRAY)
+    processed_frame = auto_gamma_correction(adjust_lighting(frame))
 
     # --- FACE DETECTION ---
-    faces = detector(gray)
-    face_mask = np.zeros_like(gray, dtype=np.uint8)  # Mask of face regions
-
+    faces = detect_faces(processed_frame, detector, predictor)
     for face in faces:
-        x, y, w, h = face.left(), face.top()-50, face.width(), face.height()+100
-        cv2.rectangle(output_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        x, y, w, h = face["bbox"]
+        cv2.rectangle(output_frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        for (lx, ly) in face["landmarks"]:
+            cv2.circle(output_frame, (lx, ly), 2, (0, 0, 255), -1)
 
-        # Draw landmarks
-        landmarks = get_landmarks(predictor, gray, face)
-        for (lx, ly) in landmarks:
-            cv2.circle(output_frame, (int(lx), int(ly)), 2, (0, 0, 255), -1)
+    # --- HAND DETECTION + TRACKING ---
+    detected_hands = locate_hands(frame, hands_model)
+    if len(detected_hands) == 2:
+        tracks = update_hand_tracks(tracks, detected_hands)
+        for i, hand in enumerate(detected_hands):
+            x, y, w, h = hand["bbox"]
+            cx, cy = hand["center"]
+            cv2.rectangle(output_frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+            cv2.circle(output_frame, (cx, cy), 6, (0, 0, 255), -1)
+            cv2.putText(output_frame, f"Hand {i+1}", (x, y-10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,0,0), 2)
+            
+    # --- GESTURE DETECTION ---
+    if faces:  # assume single face
+        face_bbox = faces[0]["bbox"]
+        rainbow_done = detect_rainbow_gesture(tracks, face_bbox)
+        if rainbow_done:
+            cv2.putText(output_frame, "Rainbow Gesture Detected!", (50,50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,255,0), 3)
 
-        # Add face region to mask
-        cv2.rectangle(face_mask, (x, y), (x + w, y + h), 255, -1)
-
-    # --- HAND DETECTION ---
-    # Get HSV values from sliders
-    h_min = cv2.getTrackbarPos("H Min", "HSV Tuning")
-    h_max = cv2.getTrackbarPos("H Max", "HSV Tuning")
-    s_min = cv2.getTrackbarPos("S Min", "HSV Tuning")
-    s_max = cv2.getTrackbarPos("S Max", "HSV Tuning")
-    v_min = cv2.getTrackbarPos("V Min", "HSV Tuning")
-    v_max = cv2.getTrackbarPos("V Max", "HSV Tuning")
-
-    lower_skin = np.array([h_min, s_min, v_min], dtype=np.uint8)
-    upper_skin = np.array([h_max, s_max, v_max], dtype=np.uint8)
-
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, lower_skin, upper_skin)
-
-    # --- IMPORTANT: Ignore face region ---
-    mask = cv2.bitwise_and(mask, cv2.bitwise_not(face_mask))
-
-    # Clean mask
-    kernel = np.ones((5,5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.dilate(mask, kernel, iterations=1)
-
-    # Find contours (hands)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > 5000] # Filter out small blobs
-    valid_contours = sorted(valid_contours, key=cv2.contourArea, reverse=True) # Sort by area (largest first)
-    valid_contours = valid_contours[:2] # Keep only the 2 largest
-    for cnt in valid_contours:
-        if cv2.contourArea(cnt) > 25000:  # big contour -> maybe 2 hands
-            from sklearn.cluster import KMeans
-            cnt_points = cnt.reshape(-1, 2)
-            kmeans = KMeans(n_clusters=2, random_state=0).fit(cnt_points)
-            for i in range(2):
-                hand_points = cnt_points[kmeans.labels_ == i]
-                x, y, w, h = cv2.boundingRect(hand_points)
-                cv2.rectangle(output_frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
-                cv2.putText(output_frame, "Hand", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,0,0), 2)
-        else:
-            x, y, w, h = cv2.boundingRect(cnt)
-            cv2.rectangle(output_frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
-            cv2.putText(output_frame, "Hand", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,0,0), 2)
+    # --- DRAW TRAILS ---
+    output_frame = draw_hand_paths(output_frame, tracks)
 
     # --- DISPLAY ---
-    cv2.imshow("Face + Hand Detection", output_frame)
-    cv2.imshow("Hand Mask", mask)
-
+    cv2.imshow("Face + Hand Tracking", output_frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
