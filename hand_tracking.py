@@ -3,6 +3,7 @@ import dlib
 import numpy as np
 import mediapipe as mp
 from collections import deque
+from face_augment_2 import add_forehead_points, exaggerate_points, warp_triangle
 
 # --- INITIALIZE STUFF ---
 detector = dlib.get_frontal_face_detector()
@@ -48,10 +49,11 @@ def detect_faces(frame, detector, predictor):
     faces = detector(gray)
     detected_faces = []
 
-    for face in faces:
-        x, y, w, h = face.left(), face.top()-50, face.width(), face.height()+100 # make the box bigger to include forehead
+    for face in faces:  
         shape = predictor(gray, face)
         landmarks = np.array([(p.x, p.y) for p in shape.parts()], dtype=np.int32)
+        landmarks = add_forehead_points(landmarks, scale_y=0.4, n_points=9)
+        x, y, w, h = face.left(), face.top()-50, face.width(), face.height()+100 #make the box bigger to include forehead
         detected_faces.append({"bbox": (x, y, w, h), "landmarks": landmarks})
     return detected_faces
 
