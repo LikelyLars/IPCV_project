@@ -103,7 +103,7 @@ def update_hand_tracks(tracks, detected_hands):
 #     return frame
 
 # --- GESTURE DETECTION ---
-def detect_rainbow_gesture(tracks, face_bbox, min_start_distance=60, end_distance_ratio=0.5):
+def detect_rainbow_gesture(tracks, face_bbox, min_start_distance=80, end_distance_ratio=0.5):
     """Detect a rainbow-like gesture over the head."""
     if len(tracks) < 2 or len(tracks[0]) < 5 or len(tracks[1]) < 5:
         return False
@@ -177,7 +177,7 @@ def apply_yellow_tint(frame, landmarks_target):
     # Convert to LAB and shift toward yellow
     lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
     L, A, B = cv2.split(lab)
-    B = cv2.add(B, 50)
+    B = cv2.add(B, yellow_strength)
     B = np.clip(B, 0, 255)
     lab_yellow = cv2.merge([L, A, B])
     yellow_bgr = cv2.cvtColor(lab_yellow, cv2.COLOR_LAB2BGR)
@@ -188,33 +188,52 @@ def apply_yellow_tint(frame, landmarks_target):
 
     return blended
 
-def apply_brown_spots(frame, landmarks_target, spot_indices, spot_offsets, spot_radii):
-    """Draw brown spots that follow facial landmarks."""
-    spot_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+def nothing(x):
+    pass
 
+def apply_brown_spots_lab(frame, landmarks_target, spot_indices, spot_offsets, spot_radii, lab_shift=(15, -50), delta_L=40):
+    """    Draw darker brown spots in LAB color space that follow facial landmarks."""
+    # Convert to LAB
+    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.float32)
+    L, A, B = cv2.split(lab)
+
+    # Create spot mask
+    spot_mask = np.zeros(frame.shape[:2], dtype=np.float32)
     for i, idx in enumerate(spot_indices):
         cx, cy = landmarks_target[idx] + spot_offsets[i]
-        cv2.circle(spot_mask, (int(cx), int(cy)), int(spot_radii[i]), 255, -1)
-
+        cv2.circle(spot_mask, (int(cx), int(cy)), int(spot_radii[i]), 1.0, -1)  # mask in [0,1]
     spot_mask = cv2.GaussianBlur(spot_mask, (41, 41), 20)
 
-    # Create brown tint
-    brown_tinted = frame.copy()
-    brown_tinted[:, :, 2] = cv2.add(brown_tinted[:, :, 2], 15)   # More red
-    brown_tinted[:, :, 1] = cv2.subtract(brown_tinted[:, :, 1], 50)  # Less green
-    brown_tinted[:, :, 0] = cv2.subtract(brown_tinted[:, :, 0], 80)  # Less blue
+    # Apply brown tint
+    A_shifted = A + lab_shift[0] * spot_mask
+    B_shifted = B + lab_shift[1] * spot_mask
 
-    spot_mask_3ch = cv2.merge([spot_mask, spot_mask, spot_mask])
-    combined = (brown_tinted * (spot_mask_3ch / 255.0) +
-                frame * (1 - spot_mask_3ch / 255.0)).astype(np.uint8)
+    # Darken L channel in the masked region
+    L_shifted = L - delta_L * spot_mask
 
-    return combined
+    # Clip values to valid range
+    L_shifted = np.clip(L_shifted, 0, 255).astype(np.uint8)
+    A_shifted = np.clip(A_shifted, 0, 255).astype(np.uint8)
+    B_shifted = np.clip(B_shifted, 0, 255).astype(np.uint8)
+
+    # Merge and convert back to BGR
+    lab_brown = cv2.merge([L_shifted, A_shifted, B_shifted])
+    bgr_brown = cv2.cvtColor(lab_brown, cv2.COLOR_LAB2BGR)
+
+    return bgr_brown
+
+
 
 # --- MAIN LOOP ---
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     print(" Error: Could not open webcam.")
     exit()
+
+cv2.namedWindow("Tints")
+cv2.createTrackbar("Yellow Strength", "Tints", 100, 127, nothing)  # default=25, max=100
+cv2.createTrackbar("Brown A Strength", "Tints", 40, 255, nothing)  # default=15, max=100
+cv2.createTrackbar("Brown B Strength", "Tints", 120, 255, nothing)  # default=50, max=100
 
 print("Press 'q' to quit.")
 while True:
@@ -224,6 +243,11 @@ while True:
 
     display_frame = frame.copy()
     processed_frame = auto_gamma_correction(adjust_lighting(frame))
+
+    #sliders
+    yellow_strength = cv2.getTrackbarPos("Yellow Strength", "Tints")
+    delta_A = cv2.getTrackbarPos("Brown A Strength", "Tints")
+    delta_B = cv2.getTrackbarPos("Brown B Strength", "Tints") - 50
 
     faces = detect_faces(processed_frame, detector, predictor)
     for face_data in faces:
@@ -259,15 +283,20 @@ while True:
             yellowed_frame = apply_yellow_tint(warped_frame, landmarks_target)
 
             # --- Add brown spots ---
-            final_frame = apply_brown_spots(
-                yellowed_frame, landmarks_target,
-                SPOT_INDICES, SPOT_OFFSETS, SPOT_RADII
-            )
+            final_frame = apply_brown_spots_lab(
+                yellowed_frame, 
+                landmarks_target,
+                SPOT_INDICES,
+                SPOT_OFFSETS,
+                SPOT_RADII,
+                lab_shift=(delta_A, delta_B)
+    )
 
             display_frame = final_frame
 
     #display_frame = draw_hand_paths(display_frame, tracks) #only for testing purposes
-    cv2.imshow("Face + Hand Tracking", display_frame)
+    cv2.imshow("Face + Hand Tracking", cv2.flip(display_frame,1))
+    
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
