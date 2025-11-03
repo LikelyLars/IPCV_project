@@ -4,6 +4,20 @@ import numpy as np
 import mediapipe as mp
 from collections import deque
 
+# --- INITIALIZE STUFF ---
+detector = dlib.get_frontal_face_detector()
+predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
+
+mp_hands = mp.solutions.hands
+hands_model = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=2,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+)
+
+tracks = [deque(maxlen=90), deque(maxlen=90)]  # two tracks: left, right
+
 # --- helper functions for image detection ---
 def adjust_lighting(image):
     """Improve contrast and lightnig balance using CLAHE."""
@@ -116,21 +130,6 @@ def detect_rainbow_gesture(tracks, face_bbox, min_start_distance=50, min_end_dis
     hands_below_head = hand1_end[1] >= head_top_y and hand2_end[1] >= head_top_y
 
     return hands_apart and hands_below_head
-
-
-# --- INITIALIZE STUFF ---
-detector = dlib.get_frontal_face_detector()
-predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
-
-mp_hands = mp.solutions.hands
-hands_model = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=2,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
-)
-
-tracks = [deque(maxlen=90), deque(maxlen=90)]  # two tracks: left, right
 
 # --- MAIN LOOP ---
 cap = cv2.VideoCapture(0)
