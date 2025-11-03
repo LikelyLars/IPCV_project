@@ -94,13 +94,13 @@ def update_hand_tracks(tracks, detected_hands):
         tracks[i].append(detected_hands[i]["center"])
     return tracks
 
-def draw_hand_paths(frame, tracks):
-    """Draw hand motion trails for debugging."""
-    colors = [(255, 0, 0), (0, 255, 255)]  # Blue = left, Yellow = right
-    for i, track in enumerate(tracks):
-        for j in range(1, len(track)):
-            cv2.line(frame, track[j-1], track[j], colors[i], 3)
-    return frame
+# def draw_hand_paths(frame, tracks):
+#     """Draw hand motion trails for debugging."""
+#     colors = [(255, 0, 0), (0, 255, 255)]  # Blue = left, Yellow = right
+#     for i, track in enumerate(tracks):
+#         for j in range(1, len(track)):
+#             cv2.line(frame, track[j-1], track[j], colors[i], 3)
+#     return frame
 
 # --- GESTURE DETECTION ---
 def detect_rainbow_gesture(tracks, face_bbox, min_start_distance=60, end_distance_ratio=0.5):
@@ -230,27 +230,27 @@ while True:
         x, y, w, h = face_data["bbox"]
         landmarks = face_data["landmarks"]
 
-        cv2.rectangle(display_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-        for (lx, ly) in landmarks:
-            cv2.circle(display_frame, (int(lx), int(ly)), 2, (0, 0, 255), -1)
+        # cv2.rectangle(display_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        # for (lx, ly) in landmarks:
+        #     cv2.circle(display_frame, (int(lx), int(ly)), 2, (0, 0, 255), -1)
 
     detected_hands = detect_hands(processed_frame, hands_model)
     if detected_hands:
         tracks = update_hand_tracks(tracks, detected_hands)
-        for i, hand in enumerate(detected_hands):
-            x, y, w, h = hand["bbox"]
-            cx, cy = hand["center"]
-            cv2.rectangle(display_frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
-            cv2.circle(display_frame, (cx, cy), 6, (0, 0, 255), -1)
-            cv2.putText(display_frame, f"Hand {i + 1}", (x, y - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        # for i, hand in enumerate(detected_hands):
+        #     x, y, w, h = hand["bbox"]
+        #     cx, cy = hand["center"]
+        #     cv2.rectangle(display_frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+        #     cv2.circle(display_frame, (cx, cy), 6, (0, 0, 255), -1)
+        #     cv2.putText(display_frame, f"Hand {i + 1}", (x, y - 10),
+        #                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
     if faces:
         face_data = faces[0]
         face_bbox = face_data["bbox"]
         if detect_rainbow_gesture(tracks, face_bbox):
-            cv2.putText(display_frame, "Rainbow Gesture Detected!", (50, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
+            # cv2.putText(display_frame, "Rainbow Gesture Detected!", (50, 50),
+            #             cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
             
             # --- Warp the face ---
             warped_frame, landmarks_target = warp_face_region(frame, face_data["landmarks"])
@@ -266,7 +266,7 @@ while True:
 
             display_frame = final_frame
 
-    display_frame = draw_hand_paths(display_frame, tracks) #only for testing purposes
+    #display_frame = draw_hand_paths(display_frame, tracks) #only for testing purposes
     cv2.imshow("Face + Hand Tracking", display_frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
