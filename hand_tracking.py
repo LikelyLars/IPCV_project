@@ -3,8 +3,9 @@ import dlib
 import numpy as np
 import mediapipe as mp
 from collections import deque
-from face_augment_2 import add_forehead_points, exaggerate_points, warp_triangle
 from scipy.spatial import Delaunay
+
+from face_augment_2 import add_forehead_points, exaggerate_points, warp_triangle
 
 # --- INITIALIZATION ---
 detector = dlib.get_frontal_face_detector()
@@ -21,10 +22,9 @@ hands_model = mp_hands.Hands(
 tracks = [deque(maxlen=90), deque(maxlen=90)]  # left, right hand tracks
 
 # --- SPONGEBOB SPOT CONFIGURATION ---
-np.random.seed(42)
 SPOT_INDICES = np.random.choice(range(68), size=15, replace=False)
 SPOT_OFFSETS = np.random.randint(-10, 10, size=(len(SPOT_INDICES), 2))
-SPOT_RADII = np.random.randint(10, 40, size=len(SPOT_INDICES))
+SPOT_RADII = np.random.randint(10, 25, size=len(SPOT_INDICES))
 
 # --- SCALING PARAMETERS ---
 SCALE_X = 1.05
@@ -171,7 +171,9 @@ def apply_yellow_tint(frame, landmarks_target):
     cv2.fillConvexPoly(mask, np.int32(landmarks_target), 255)
 
     # Expand + soften the mask
-    mask = cv2.dilate(mask, np.ones((25, 25), np.uint8), iterations=1)
+    #mask = cv2.dilate(mask, np.ones((25, 25), np.uint8), iterations=1)
+    #apply closing on mask
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((25, 25), np.uint8))
     mask = cv2.GaussianBlur(mask, (35, 35), 25)
 
     # Convert to LAB and shift toward yellow
