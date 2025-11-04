@@ -20,16 +20,13 @@ hands_model = mp_hands.Hands(
 
 tracks = [deque(maxlen=90), deque(maxlen=90)]  # left, right hand tracks
 
+# reset hand tracks
 def reset_hand_tracks():
     tracks = [deque(maxlen=90), deque(maxlen=90)]  # left, right hand tracks
     return tracks
 
 # --- SPONGEBOB SPOT CONFIGURATION ---
-
-SPOT_INDICES = np.random.choice(range(68), size=np.random.randint(10,20), replace=False)
-SPOT_OFFSETS = np.random.randint(-10, 10, size=(len(SPOT_INDICES), 2))
-SPOT_RADII = np.random.randint(10, 20, size=len(SPOT_INDICES))
-
+# generates new spot parameters when the filter is activated
 def generate_spots():
     global SPOT_INDICES, SPOT_OFFSETS, SPOT_RADII
     SPOT_INDICES = np.random.choice(range(68), size=np.random.randint(10,20), replace=False)
@@ -37,6 +34,7 @@ def generate_spots():
     SPOT_RADII = np.random.randint(10, 20, size=len(SPOT_INDICES))
 
 
+# ---- IMAGE PREPROCESSING FUNCTIONS ----
 # Improve contrast and lighting balance using CLAHE(Contrast Limited Adaptive Histogram Equalization)
 def adjust_lighting(image):
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
@@ -48,13 +46,14 @@ def adjust_lighting(image):
 
 # Auto gamma correction based on brightness
 def auto_gamma_correction(image):
-
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     mean_intensity = np.mean(gray)
     gamma = np.interp(mean_intensity, [50, 150], [1.8, 0.7])
     inv_gamma = 1.0 / gamma
     table = np.array([(i / 255.0) ** inv_gamma * 255 for i in np.arange(256)]).astype("uint8")
     return cv2.LUT(image, table)
+
+# ----- FACE RECOGNITION AND LANDMARK DETECTION FUNCTIONS ----
 
 # add additional forehead points to landmarks (extending from the eyebrows upwards)
 def add_forehead_points(landmarks, scale_y=0.8, n_points=12):
@@ -91,6 +90,7 @@ def detect_faces(frame):
         break # Process only the first detected face
     return detected_faces
 
+# ------ HAND DETECTION AND TRACKING FUNCTIONS -----
 
 # Detect hands using MediaPipe and return bounding boxes & centroids
 def detect_hands(frame):
@@ -119,16 +119,18 @@ def update_hand_tracks(tracks, detected_hands):
         tracks[i].append(detected_hands[i]["center"])
     return tracks
 
+# Draw hand paths for testing purposes
 def draw_hand_paths(tracks,frame):
-    """Draw hand motion trails for debugging."""
     colors = [(255, 0, 0), (0, 255, 255)]  # Blue = left, Yellow = right
     for i, track in enumerate(tracks):
         for j in range(1, len(track)):
             cv2.line(frame, track[j-1], track[j], colors[i], 3)
     return frame
 
+
+# ---- GESTURE DETECTION FUNCTIONS ----
+# checking for rainbow gesture (hands start clos together above head, then move apart below/next to head)
 def detect_rainbow_gesture(tracks, face_bbox, min_start_distance=80, end_distance_ratio=0.5):
-    """Detect a rainbow-like gesture over the head."""
     if len(tracks) < 2 or len(tracks[0]) < 5 or len(tracks[1]) < 5:
         return False
 
@@ -156,45 +158,9 @@ def detect_rainbow_gesture(tracks, face_bbox, min_start_distance=80, end_distanc
 
     return hands_apart and hands_below
 
-# def detect_inverse_rainbow_gesture(tracks, face_bbox, min_end_distance=80, start_distance_ratio=0.5):
-#     """Detect an inverse rainbow-like gesture (hands moving together above the head)."""
-#     if len(tracks) < 2 or len(tracks[0]) < 5 or len(tracks[1]) < 5:
-#         return False
+# ---- SPONGEBOB FILTER FUNCTIONS ----
 
-#     head_x, head_y, head_w, head_h = face_bbox
-#     head_top = head_y
-
-#     # --- Detect the start: hands apart and below/next to the head ---
-#     start_idx = None
-#     for i in range(min(len(tracks[0]), len(tracks[1]))):
-#         h1, h2 = tracks[0][i], tracks[1][i]
-
-#         # hands are apart horizontally
-#         hands_apart = (
-#             (h1[0] < head_x + head_w * start_distance_ratio and
-#              h2[0] > head_x + head_w * (1 - start_distance_ratio))
-#             or
-#             (h2[0] < head_x + head_w * start_distance_ratio and
-#              h1[0] > head_x + head_w * (1 - start_distance_ratio))
-#         )
-
-#         # both hands are below or around the top of the head
-#         below_head = h1[1] <= head_top and h2[1] <= head_top
-
-#         if hands_apart and below_head:
-#             start_idx = i
-#             break
-
-#     if start_idx is None:
-#         return False
-
-#     # --- Detect the end: hands close together above the head ---
-#     h1_end, h2_end = tracks[0][-1], tracks[1][-1]
-#     hands_close = np.linalg.norm(np.array(h1_end) - np.array(h2_end)) < min_end_distance
-#     above_head = h1_end[1] < head_top and h2_end[1] < head_top
-
-#     return hands_close and above_head
-
+# Exaggerate facial landmarks to create points which to warp towards
 def exaggerate_points(points, face_center, scale_x=1.6, scale_y=1.10, square_power=1.5):
     points = points.copy()
     cx, cy = face_center
@@ -225,6 +191,7 @@ def exaggerate_points(points, face_center, scale_x=1.6, scale_y=1.10, square_pow
 
     return points
 
+# Warp triangles based on the exagerated points generated with exaggerate_points
 def warp_triangle(src, dst, tri_src, tri_dst):
     r1 = cv2.boundingRect(np.int32(tri_src))
     r2 = cv2.boundingRect(np.int32(tri_dst))
@@ -258,6 +225,7 @@ def warp_triangle(src, dst, tri_src, tri_dst):
 
     dst[y2:y2 + h2, x2:x2 + w2] = dst_crop * (1 - mask) + warped_rect * mask
 
+# combines all face warping steps, returns warped frame and new landmarks
 def warp_face_region(frame, face_landmarks,SCALE_X=1.05,SCALE_Y=0.95,SQUARE_POWER=2.0):
     """Apply geometric warping to exaggerate facial features."""
     height, width = frame.shape[:2]
@@ -291,8 +259,8 @@ def warp_face_region(frame, face_landmarks,SCALE_X=1.05,SCALE_Y=0.95,SQUARE_POWE
 
     return warped, landmarks_target
 
+# Applies spongebob like yellow tint to face region based on (exagerated) landmarks
 def apply_yellow_tint(frame, landmarks_target):
-
     #create mask in the shape of the face
     mask = np.zeros(frame.shape[:2], dtype=np.uint8)
     points = np.array(landmarks_target, dtype=np.int32)
@@ -312,6 +280,7 @@ def apply_yellow_tint(frame, landmarks_target):
 
     return blended
 
+# Applies brown spots to face region. Spots are randomly generated when filter is activated
 def apply_brown_tint(frame, landmarks_target, lab_shift=(20, 15), delta_L=-60):
     """
     Draw darker brown spots in LAB color space that follow facial landmarks.
@@ -337,28 +306,30 @@ def apply_brown_tint(frame, landmarks_target, lab_shift=(20, 15), delta_L=-60):
     spot_mask = cv2.GaussianBlur(spot_mask, (15, 15), 5)
     spot_mask = np.clip(spot_mask, 0, 1)
 
-    # --- 2. Limit to face area ---
+    #ensure spots stay within face region
     face_mask = np.zeros(frame.shape[:2], dtype=np.float32)
     points = np.array(landmarks_target, dtype=np.int32)
     hull = cv2.convexHull(points)
     cv2.fillConvexPoly(face_mask, hull, 1.0)
     spot_mask *= face_mask  # keep spots inside face
 
-    # --- 3. Apply color shift only where spots exist ---
+    # apply spot mask to LAB channels
     L_spot = L + delta_L * spot_mask           # darken (delta_L < 0)
     A_spot = A + lab_shift[0] * spot_mask      # shift toward red
     B_spot = B + lab_shift[1] * spot_mask      # shift toward yellow/brown
 
+    #merge channels back
     lab_brown = cv2.merge([L_spot, A_spot, B_spot])
     lab_brown = np.clip(lab_brown, 0, 255).astype(np.uint8)
 
-    # --- 4. Convert back to BGR ---
+    #convert back to BGR
     brown_bgr = cv2.cvtColor(lab_brown, cv2.COLOR_LAB2BGR)
 
     return brown_bgr
 
 import cv2
 
+# add meme-style text at the bottom of the frame
 def put_meme_text(frame, text, font_scale=2, thickness=4, bottom_margin=20):
     font = cv2.FONT_HERSHEY_DUPLEX
     outline_thickness = thickness + 2
@@ -391,8 +362,8 @@ def put_meme_text(frame, text, font_scale=2, thickness=4, bottom_margin=20):
 
     return frame
 
+#overlay image with alpha channel handling (when the rainbow is not fully transparent, show it)
 def overlay_image_alpha(bg, fg, x, y):
-    """Overlay fg onto bg at position (x, y) with alpha channel."""
     fg_h, fg_w = fg.shape[:2]
 
     # Clip the overlay region to fit inside background
